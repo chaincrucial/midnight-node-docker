@@ -1,0 +1,126 @@
+name: Build and Push Midnight Node
+
+on:
+  workflow_dispatch:
+    inputs:
+      testing:
+        description: Testing workflow
+        required: false
+        type: boolean
+        default: true
+      deploy_branch:
+        description: Branch to deploy
+        required: false
+        default: main
+
+jobs:
+  set_environment_vars:
+    runs-on: ubuntu-latest
+    outputs:
+      midnight_node_image: ${{ steps.set_midnight_node_image.outputs.midnight_node_image }}
+      deploy_branch: ${{ steps.set_deploy_branch.outputs.deploy_branch }}
+      testing: ${{ steps.set_testing.outputs.testing }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.deploy_branch }}
+      - name: Load environment variables
+        id: set_midnight_node_image
+        run: |
+          MIDNIGHT_NODE_IMAGE=$(grep 'MIDNIGHT_NODE_IMAGE' .env | cut -d '=' -f2 | tr -d '"')
+          echo "midnight_node_image=$MIDNIGHT_NODE_IMAGE" >> $GITHUB_OUTPUT
+      - name: Set deploy branch
+        id: set_deploy_branch
+        run: echo "deploy_branch=${{ github.event.inputs.deploy_branch }}" >> $GITHUB_OUTPUT
+      - name: Set TESTING
+        id: set_testing
+        run: echo "testing=${{ (steps.vars.outputs.branch != 'main' || github.event.inputs.testing) }}" >> $GITHUB_OUTPUT
+
+  build_production:
+    needs: set_environment_vars
+    if: needs.set_environment_vars.outputs.testing == 'false'
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: docker.io
+      REPO: ${ secrets.DOCKER_USER }
+      MIDNIGHT_NODE_IMAGE: ${{ needs.set_environment_vars.outputs.midnight_node_image }}
+    steps:
+      - name: Set IMAGE_TAG
+        id: set_image_tag
+        run: |
+          TAG=${{ needs.set_environment_vars.outputs.midnight_node_image }}
+          echo "IMAGE_TAG=$REGISTRY/$REPO/${TAG/midnightnetwork\//}" >> $GITHUB_ENV
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.set_environment_vars.outputs.deploy_branch }}
+
+      - name: Login to Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and Push Midnight Node container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: chaincrucial_midnight.containerfile
+          push: true
+          tags: ${{ env.IMAGE_TAG }}
+          build-args: |
+            MIDNIGHT_NODE_IMAGE=${{ needs.set_environment_vars.outputs.midnight_node_image }}
+
+      - name: Add summary details
+        if: always()
+        run: |
+          echo "## Summary Details" >> $GITHUB_STEP_SUMMARY
+          echo "* Image Name: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "* Registry: ${{ env.REGISTRY }}" >> $GITHUB_STEP_SUMMARY
+
+  build_testing:
+    needs: set_environment_vars
+    if: needs.set_environment_vars.outputs.testing == 'true' || needs.set_environment_vars.outputs.deploy_branch != 'main'
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: ghcr.io
+      REPO: ${{ github.repository_owner }}
+      MIDNIGHT_NODE_IMAGE: ${{ needs.set_environment_vars.outputs.midnight_node_image }}
+    steps:
+      - name: Set IMAGE_TAG
+        id: set_image_tag
+        run: |
+          TAG=${{ needs.set_environment_vars.outputs.midnight_node_image }}
+          echo "IMAGE_TAG=$REGISTRY/$REPO/${TAG/midnightnetwork\//}" >> $GITHUB_ENV
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.set_environment_vars.outputs.deploy_branch }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Midnight Node container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: chaincrucial_midnight.containerfile
+          push: true
+          tags: ${{ env.IMAGE_TAG }}
+          build-args: |
+            MIDNIGHT_NODE_IMAGE=${{ needs.set_environment_vars.outputs.midnight_node_image }}
+
+      - name: Add summary details
+        if: always()
+        run: |
+          echo "## Summary Details" >> $GITHUB_STEP_SUMMARY
+          echo "* Image Name: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "* Registry: ${{ env.REGISTRY }}" >> $GITHUB_STEP_SUMMARY
